@@ -14,37 +14,49 @@ def health():
     return "OK", 200
 
 
+def replace_in_runs(paragraph, replacements):
+    full_text = "".join(run.text for run in paragraph.runs)
+
+    for key, value in replacements.items():
+        if key in full_text:
+            full_text = full_text.replace(key, value)
+
+    # clear existing runs
+    for run in paragraph.runs:
+        run.text = ""
+
+    # write back as single run (keeps paragraph formatting)
+    paragraph.runs[0].text = full_text
+
+
 @app.route("/generate", methods=["POST"])
 def generate_docx():
     try:
         if not os.path.exists(TEMPLATE_PATH):
-            return jsonify({
-                "error": "Template DOCX not found",
-                "expected_path": TEMPLATE_PATH
-            }), 500
+            return jsonify({"error": "Template DOCX not found"}), 500
 
         data = request.get_json(force=True)
-
-        required = ["test", "class", "phase", "set", "date"]
-        for k in required:
-            if k not in data:
-                return jsonify({"error": f"Missing field: {k}"}), 400
-
-        doc = Document(TEMPLATE_PATH)
 
         replacements = {
             "{{TEST_NAME}}": data["test"],
             "{{CLASS}}": data["class"],
             "{{PHASE}}": data["phase"],
             "{{SET}}": data["set"],
-            "{{DATE}}": data["date"],
+            "{{DATE}}": data["date"]
         }
 
-        for para in doc.paragraphs:
-            for key, val in replacements.items():
-                if key in para.text:
-                    for run in para.runs:
-                        run.text = run.text.replace(key, val)
+        doc = Document(TEMPLATE_PATH)
+
+        # 🔹 Replace in body
+        for p in doc.paragraphs:
+            replace_in_runs(p, replacements)
+
+        # 🔹 Replace in tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        replace_in_runs(p, replacements)
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
         doc.save(tmp.name)
