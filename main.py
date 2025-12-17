@@ -1,61 +1,54 @@
 from flask import Flask, request, send_file
 from docx import Document
-import tempfile, zipfile, os
+import tempfile
+import os
 
 app = Flask(__name__)
 
-@app.route("/", methods=["GET"])
-def health():
-    return "OK", 200
-
-
 @app.route("/generate", methods=["POST"])
 def generate_docx():
-    zip_file = request.files.get("zip")
-    if not zip_file:
-        return "ZIP missing", 400
 
-    meta = request.form
+    if "file" not in request.files:
+        return "No file received", 400
+
+    file = request.files["file"]
+    data = request.form
+
     temp_dir = tempfile.mkdtemp()
+    input_path = os.path.join(temp_dir, "input.docx")
+    output_path = os.path.join(temp_dir, "output.docx")
 
-    zip_path = os.path.join(temp_dir, "input.zip")
-    zip_file.save(zip_path)
+    file.save(input_path)
 
-    with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(temp_dir)
-
-    docx_path = os.path.join(temp_dir, "FrontPage.docx")
-    if not os.path.exists(docx_path):
-        return "FrontPage.docx not found in ZIP", 400
-
-    doc = Document(docx_path)
+    doc = Document(input_path)
 
     replacements = {
-        "{{CLASS}}": meta.get("class"),
-        "{{SET}}": meta.get("set"),
-        "{{TEST_NAME}}": meta.get("test"),
-        "{{PHASE}}": meta.get("phase"),
-        "{{DATE}}": meta.get("date")
+        "{{CLASS}}": data.get("class", ""),
+        "{{SET}}": data.get("set", ""),
+        "{{TEST_NAME}}": data.get("test", ""),
+        "{{PHASE}}": data.get("phase", ""),
+        "{{DATE}}": data.get("date", "")
     }
 
-    def replace(container):
-        for p in container.paragraphs:
-            for k, v in replacements.items():
-                if k in p.text:
-                    p.text = p.text.replace(k, v)
+    # Replace in paragraphs
+    for p in doc.paragraphs:
+        for k, v in replacements.items():
+            if k in p.text:
+                p.text = p.text.replace(k, v)
 
-    replace(doc)
-
+    # Replace in tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                replace(cell)
+                for p in cell.paragraphs:
+                    for k, v in replacements.items():
+                        if k in p.text:
+                            p.text = p.text.replace(k, v)
 
-    output_path = os.path.join(temp_dir, "Updated_FrontPage.docx")
     doc.save(output_path)
 
     return send_file(
         output_path,
         as_attachment=True,
-        download_name="Updated_FrontPage.docx"
+        download_name="FrontPage_Updated.docx"
     )
