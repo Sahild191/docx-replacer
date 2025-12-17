@@ -1,54 +1,75 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from docx import Document
 import tempfile
+import zipfile
 import os
 
 app = Flask(__name__)
 
 @app.route("/generate", methods=["POST"])
 def generate_docx():
+    try:
+        # 1️⃣ Get JSON data
+        data = request.json
+        zip_path = data.get("zip_path")
+        values = data.get("values")
 
-    if "file" not in request.files:
-        return "No file received", 400
+        if not zip_path or not values:
+            return jsonify({"error": "Missing zip_path or values"}), 400
 
-    file = request.files["file"]
-    data = request.form
+        # 2️⃣ Create temp directory
+        temp_dir = tempfile.mkdtemp()
 
-    temp_dir = tempfile.mkdtemp()
-    input_path = os.path.join(temp_dir, "input.docx")
-    output_path = os.path.join(temp_dir, "output.docx")
+        zip_file_path = os.path.join(temp_dir, "template.zip")
 
-    file.save(input_path)
+        # 3️⃣ Download ZIP from Drive public URL
+        import requests
+        r = requests.get(zip_path)
+        r.raise_for_status()
 
-    doc = Document(input_path)
+        with open(zip_file_path, "wb") as f:
+            f.write(r.content)
 
-    replacements = {
-        "{{CLASS}}": data.get("class", ""),
-        "{{SET}}": data.get("set", ""),
-        "{{TEST_NAME}}": data.get("test", ""),
-        "{{PHASE}}": data.get("phase", ""),
-        "{{DATE}}": data.get("date", "")
-    }
+        # 4️⃣ Extract ZIP
+        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
+            zip_ref.extractall(temp_dir)
 
-    # Replace in paragraphs
-    for p in doc.paragraphs:
-        for k, v in replacements.items():
-            if k in p.text:
-                p.text = p.text.replace(k, v)
+        # 5️⃣ Find DOCX inside ZIP
+        docx_path = None
+        for root, _, files in os.walk(temp_dir):
+            for file in files:
+                if file.lower().endswith(".docx"):
+                    docx_path = os.path.join(root, file)
+                    break
 
-    # Replace in tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    for k, v in replacements.items():
-                        if k in p.text:
-                            p.text = p.text.replace(k, v)
+        if not docx_path:
+            return jsonify({"error": "No DOCX found in ZIP"}), 400
 
-    doc.save(output_path)
+        # 6️⃣ Load DOCX
+        doc = Document(docx_path)
 
-    return send_file(
-        output_path,
-        as_attachment=True,
-        download_name="FrontPage_Updated.docx"
-    )
+        # 7️⃣ Replace placeholders
+        for p in doc.paragraphs:
+            for key, value in values.items():
+                if key in p.text:
+                    for run in p.runs:
+                        run.text = run.text.replace(key, value)
+
+        # 8️⃣ Save output
+        output_path = os.path.join(temp_dir, "output.docx")
+        doc.save(output_path)
+
+        # 9️⃣ Return file
+        return send_file(
+            output_path,
+            as_attachment=True,
+            download_name="front_page.docx"
+        )
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/")
+def health():
+    return "OK"
