@@ -7,48 +7,54 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def health():
-    return "OK", 200
-
+    return "ok"
 
 @app.route("/", methods=["POST"])
 def replace_placeholders():
 
-    file = request.files.get("file")
-    if not file:
-        return "No file received", 400
+    if "file" not in request.files:
+        return "Missing file field", 400
 
-    meta = request.form
+    uploaded = request.files["file"]
 
+    if uploaded.filename == "":
+        return "Empty filename", 400
+
+    # Temp paths
     temp_dir = tempfile.mkdtemp()
     input_path = os.path.join(temp_dir, "input.docx")
     output_path = os.path.join(temp_dir, "output.docx")
 
-    file.save(input_path)
+    # Save file
+    uploaded.save(input_path)
 
-    doc = Document(input_path)
+    if not os.path.exists(input_path):
+        return "File save failed", 500
 
+    # Metadata
     replacements = {
-        "{{CLASS}}": meta.get("class", ""),
-        "{{SET}}": meta.get("set", ""),
-        "{{TEST_NAME}}": meta.get("test", ""),
-        "{{PHASE}}": meta.get("phase", ""),
-        "{{DATE}}": meta.get("date", "")
+        "{{CLASS}}": request.form.get("class", ""),
+        "{{SET}}": request.form.get("set", ""),
+        "{{TEST_NAME}}": request.form.get("test", ""),
+        "{{PHASE}}": request.form.get("phase", ""),
+        "{{DATE}}": request.form.get("date", "")
     }
 
-    # Replace in paragraphs
-    for paragraph in doc.paragraphs:
-        for key, value in replacements.items():
-            if key in paragraph.text:
-                paragraph.text = paragraph.text.replace(key, value)
+    # Open DOCX safely
+    doc = Document(input_path)
 
-    # Replace in tables
+    def replace_paragraphs(paragraphs):
+        for p in paragraphs:
+            for k, v in replacements.items():
+                if k in p.text:
+                    p.text = p.text.replace(k, v)
+
+    replace_paragraphs(doc.paragraphs)
+
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    for key, value in replacements.items():
-                        if key in paragraph.text:
-                            paragraph.text = paragraph.text.replace(key, value)
+                replace_paragraphs(cell.paragraphs)
 
     doc.save(output_path)
 
