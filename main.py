@@ -1,6 +1,6 @@
 from flask import Flask, request, send_file
 from docx import Document
-import tempfile, zipfile, os, subprocess
+import tempfile, zipfile, os
 
 app = Flask(__name__)
 
@@ -10,26 +10,24 @@ def health():
 
 
 @app.route("/generate", methods=["POST"])
-def generate_pdf():
+def generate_docx():
     zip_file = request.files.get("zip")
     if not zip_file:
         return "ZIP missing", 400
 
     meta = request.form
-
     temp_dir = tempfile.mkdtemp()
+
     zip_path = os.path.join(temp_dir, "input.zip")
     zip_file.save(zip_path)
 
-    # Unzip
-    with zipfile.ZipFile(zip_path, 'r') as z:
+    with zipfile.ZipFile(zip_path, "r") as z:
         z.extractall(temp_dir)
 
     docx_path = os.path.join(temp_dir, "FrontPage.docx")
     if not os.path.exists(docx_path):
         return "FrontPage.docx not found in ZIP", 400
 
-    # Open Word
     doc = Document(docx_path)
 
     replacements = {
@@ -40,7 +38,6 @@ def generate_pdf():
         "{{DATE}}": meta.get("date")
     }
 
-    # Replace everywhere
     def replace(container):
         for p in container.paragraphs:
             for k, v in replacements.items():
@@ -54,17 +51,11 @@ def generate_pdf():
             for cell in row.cells:
                 replace(cell)
 
-    updated_docx = os.path.join(temp_dir, "updated.docx")
-    doc.save(updated_docx)
+    output_path = os.path.join(temp_dir, "Updated_FrontPage.docx")
+    doc.save(output_path)
 
-    # Convert to PDF (LibreOffice)
-    subprocess.run([
-        "libreoffice",
-        "--headless",
-        "--convert-to", "pdf",
-        updated_docx,
-        "--outdir", temp_dir
-    ], check=True)
-
-    pdf_path = os.path.join(temp_dir, "updated.pdf")
-    return send_file(pdf_path, as_attachment=True, download_name="FrontPage.pdf")
+    return send_file(
+        output_path,
+        as_attachment=True,
+        download_name="Updated_FrontPage.docx"
+    )
