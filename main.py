@@ -1,65 +1,70 @@
 from flask import Flask, request, send_file
 from docx import Document
-import tempfile
-import os
+import tempfile, zipfile, os, subprocess
 
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def health():
-    return "ok"
+    return "OK", 200
 
-@app.route("/", methods=["POST"])
-def replace_placeholders():
 
-    if "file" not in request.files:
-        return "Missing file field", 400
+@app.route("/generate", methods=["POST"])
+def generate_pdf():
+    zip_file = request.files.get("zip")
+    if not zip_file:
+        return "ZIP missing", 400
 
-    uploaded = request.files["file"]
+    meta = request.form
 
-    if uploaded.filename == "":
-        return "Empty filename", 400
-
-    # Temp paths
     temp_dir = tempfile.mkdtemp()
-    input_path = os.path.join(temp_dir, "input.docx")
-    output_path = os.path.join(temp_dir, "output.docx")
+    zip_path = os.path.join(temp_dir, "input.zip")
+    zip_file.save(zip_path)
 
-    # Save file
-    uploaded.save(input_path)
+    # Unzip
+    with zipfile.ZipFile(zip_path, 'r') as z:
+        z.extractall(temp_dir)
 
-    if not os.path.exists(input_path):
-        return "File save failed", 500
+    docx_path = os.path.join(temp_dir, "FrontPage.docx")
+    if not os.path.exists(docx_path):
+        return "FrontPage.docx not found in ZIP", 400
 
-    # Metadata
+    # Open Word
+    doc = Document(docx_path)
+
     replacements = {
-        "{{CLASS}}": request.form.get("class", ""),
-        "{{SET}}": request.form.get("set", ""),
-        "{{TEST_NAME}}": request.form.get("test", ""),
-        "{{PHASE}}": request.form.get("phase", ""),
-        "{{DATE}}": request.form.get("date", "")
+        "{{CLASS}}": meta.get("class"),
+        "{{SET}}": meta.get("set"),
+        "{{TEST_NAME}}": meta.get("test"),
+        "{{PHASE}}": meta.get("phase"),
+        "{{DATE}}": meta.get("date")
     }
 
-    # Open DOCX safely
-    doc = Document(input_path)
-
-    def replace_paragraphs(paragraphs):
-        for p in paragraphs:
+    # Replace everywhere
+    def replace(container):
+        for p in container.paragraphs:
             for k, v in replacements.items():
                 if k in p.text:
                     p.text = p.text.replace(k, v)
 
-    replace_paragraphs(doc.paragraphs)
+    replace(doc)
 
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                replace_paragraphs(cell.paragraphs)
+                replace(cell)
 
-    doc.save(output_path)
+    updated_docx = os.path.join(temp_dir, "updated.docx")
+    doc.save(updated_docx)
 
-    return send_file(
-        output_path,
-        as_attachment=True,
-        download_name="FrontPage_Updated.docx"
-    )
+    # Convert to PDF (LibreOffice)
+    subprocess.run([
+        "libreoffice",
+        "--headless",
+        "--convert-to", "pdf",
+        updated_docx,
+        "--outdir", temp_dir
+    ], check=True)
+
+    pdf_path = os.path.join(temp_dir, "updated.pdf")
+    return send_file(pdf_path, as_attachment=True, download_name="FrontPage.pdf")
