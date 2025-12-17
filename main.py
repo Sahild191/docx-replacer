@@ -1,53 +1,92 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 from docx import Document
-import tempfile, os, base64
+import base64
+import tempfile
+import os
 
 app = Flask(__name__)
 
+@app.route("/", methods=["GET"])
+def health():
+    return "OK", 200
+
+
 @app.route("/generate", methods=["POST"])
 def generate_docx():
-    data = request.get_json()
+    try:
+        # 1️⃣ Read JSON safely
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    if not data or "file_base64" not in data:
-        return jsonify({"error": "Missing file_base64"}), 400
+        # 2️⃣ Validate required fields
+        required = ["file_base64", "class", "set", "test", "phase", "date"]
+        missing = [k for k in required if k not in data]
+        if missing:
+            return jsonify({"error": f"Missing fields: {missing}"}), 400
 
-    temp_dir = tempfile.mkdtemp()
-    input_path = os.path.join(temp_dir, "input.docx")
-    output_path = os.path.join(temp_dir, "output.docx")
+        # 3️⃣ Decode base64 DOCX
+        try:
+            docx_bytes = base64.b64decode(data["file_base64"])
+        except Exception as e:
+            return jsonify({"error": f"Base64 decode failed: {str(e)}"}), 400
 
-    # Decode DOCX
-    with open(input_path, "wb") as f:
-        f.write(base64.b64decode(data["file_base64"]))
+        # 4️⃣ Work in temp directory
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = os.path.join(tmp, "input.docx")
+            output_path = os.path.join(tmp, "output.docx")
 
-    doc = Document(input_path)
+            # ✅ WRITE DOCX TO DISK (CRITICAL FIX)
+            with open(input_path, "wb") as f:
+                f.write(docx_bytes)
 
-    replacements = {
-        "{{CLASS}}": data.get("class", ""),
-        "{{SET}}": data.get("set", ""),
-        "{{TEST_NAME}}": data.get("test", ""),
-        "{{PHASE}}": data.get("phase", ""),
-        "{{DATE}}": data.get("date", "")
-    }
+            # 🔒 Safety check
+            if not os.path.exists(input_path) or os.path.getsize(input_path) == 0:
+                return jsonify({"error": "DOCX file not written properly"}), 500
 
-    # Paragraphs
-    for p in doc.paragraphs:
-        for k, v in replacements.items():
-            if k in p.text:
-                p.text = p.text.replace(k, v)
+            # 5️⃣ Load DOCX
+            doc = Document(input_path)
 
-    # Tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    for k, v in replacements.items():
-                        if k in p.text:
-                            p.text = p.text.replace(k, v)
+            # 6️⃣ Placeholder replacements
+            replacements = {
+                "{{CLASS}}": data["class"],
+                "{{SET}}": data["set"],
+                "{{TEST_NAME}}": data["test"],
+                "{{PHASE}}": data["phase"],
+                "{{DATE}}": data["date"]
+            }
 
-    doc.save(output_path)
+            # Replace in paragraphs
+            for para in doc.paragraphs:
+                for key, value in replacements.items():
+                    if key in para.text:
+                        para.text = para.text.replace(key, value)
 
-    return send_file(
-        output_path,
-        as_attachment=True,
-        download_name="FrontPage.docx"
-    )
+            # Replace in tables (VERY IMPORTANT)
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for para in cell.paragraphs:
+                            for key, value in replacements.items():
+                                if key in para.text:
+                                    para.text = para.text.replace(key, value)
+
+            # 7️⃣ Save output
+            doc.save(output_path)
+
+            # 8️⃣ Return DOCX
+            return send_file(
+                output_path,
+                as_attachment=True,
+                download_name="FrontPage.docx",
+                mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
+    except Exception as e:
+        # Absolute fallback
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
