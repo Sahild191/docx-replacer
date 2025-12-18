@@ -1,9 +1,11 @@
 from flask import Flask, request, send_file, jsonify
-from docx import Document
-import os
-import tempfile
 import logging
+import tempfile
+import zipfile
 from pathlib import Path
+from lxml import etree
+import shutil
+import os
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -14,50 +16,73 @@ logging.basicConfig(
 app = Flask(__name__)
 
 # ---------------- CONFIG ----------------
-TEMPLATE_PATH = Path(__file__).parent / "templates" / "FrontPage_Template.docx"
+BASE_DIR = Path(__file__).parent
+TEMPLATE_PATH = BASE_DIR / "templates" / "FrontPage_Template.docx"
 
-# ---------------- HELPERS ----------------
-def replace_in_paragraph(paragraph, replacements):
-    full_text = "".join(run.text for run in paragraph.runs)
-    new_text = full_text
+# Word XML namespace
+NS = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+}
 
-    for key, val in replacements.items():
-        if key in new_text:
-            new_text = new_text.replace(key, val)
+# ---------------- CORE LOGIC ----------------
+def replace_placeholders_in_docx(template_path, replacements):
+    """
+    Replaces placeholders EVERYWHERE including shapes/textboxes
+    by directly editing DOCX XML (DrawingML safe)
+    """
 
-    if new_text != full_text:
-        # remove old runs
-        for run in paragraph.runs[::-1]:
-            run._element.getparent().remove(run._element)
-        paragraph.add_run(new_text)
+    work_dir = Path(tempfile.mkdtemp())
+    output_docx = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    output_docx.close()
 
-def replace_in_table(table, replacements):
-    for row in table.rows:
-        for cell in row.cells:
-            for p in cell.paragraphs:
-                replace_in_paragraph(p, replacements)
+    try:
+        # 1️⃣ Unzip DOCX
+        with zipfile.ZipFile(template_path, "r") as zip_ref:
+            zip_ref.extractall(work_dir)
 
-def replace_everywhere(doc, replacements):
-    # normal paragraphs
-    for p in doc.paragraphs:
-        replace_in_paragraph(p, replacements)
+        doc_xml = work_dir / "word" / "document.xml"
 
-    # tables
-    for table in doc.tables:
-        replace_in_table(table, replacements)
+        if not doc_xml.exists():
+            raise RuntimeError("document.xml not found in DOCX")
 
-    # headers & footers
-    for section in doc.sections:
-        for p in section.header.paragraphs:
-            replace_in_paragraph(p, replacements)
-        for p in section.footer.paragraphs:
-            replace_in_paragraph(p, replacements)
+        # 2️⃣ Parse XML
+        tree = etree.parse(str(doc_xml))
+        root = tree.getroot()
+
+        # 3️⃣ Replace text nodes (includes shapes)
+        for text_node in root.xpath("//w:t", namespaces=NS):
+            if text_node.text:
+                original = text_node.text
+                for key, value in replacements.items():
+                    if key in original:
+                        original = original.replace(key, value)
+                text_node.text = original
+
+        # 4️⃣ Save modified XML
+        tree.write(
+            str(doc_xml),
+            xml_declaration=True,
+            encoding="UTF-8",
+            standalone="yes"
+        )
+
+        # 5️⃣ Zip back to DOCX
+        with zipfile.ZipFile(output_docx.name, "w", zipfile.ZIP_DEFLATED) as zip_out:
+            for file in work_dir.rglob("*"):
+                zip_out.write(file, file.relative_to(work_dir))
+
+        return output_docx.name
+
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
 
 # ---------------- ROUTES ----------------
 @app.route("/", methods=["GET"])
 def health():
     logging.info("❤️ Health check hit")
     return "OK", 200
+
 
 @app.route("/generate", methods=["POST"])
 def generate_docx():
@@ -68,9 +93,10 @@ def generate_docx():
         logging.info(f"📦 Payload received: {data}")
 
         if not TEMPLATE_PATH.exists():
-            logging.error(f"❌ Template missing at {TEMPLATE_PATH}")
+            logging.error("❌ Template DOCX missing")
             return jsonify(error="Template DOCX not found"), 500
 
+        # STRICT replacement map
         replacements = {
             "{{TEST_NAME}}": data.get("test", ""),
             "{{CLASS}}": data.get("class", ""),
@@ -79,21 +105,16 @@ def generate_docx():
             "{{DATE}}": data.get("date", "")
         }
 
-        logging.info("📄 Loading template DOCX")
-        doc = Document(TEMPLATE_PATH)
+        logging.info("🧬 Replacing placeholders inside shapes (XML)")
+        output_path = replace_placeholders_in_docx(
+            TEMPLATE_PATH,
+            replacements
+        )
 
-        logging.info("🔁 Replacing placeholders")
-        replace_everywhere(doc, replacements)
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
-        tmp_path = tmp.name
-        tmp.close()
-
-        doc.save(tmp_path)
-        logging.info(f"✅ DOCX generated at {tmp_path}")
+        logging.info(f"✅ DOCX generated at {output_path}")
 
         return send_file(
-            tmp_path,
+            output_path,
             as_attachment=True,
             download_name=f"FrontPage_{data.get('set','SET')}.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
