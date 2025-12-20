@@ -103,6 +103,9 @@ def generate_docx():
             "{{PHASE}}": data.get("phase", ""),
             "{{SET}}": data.get("set", ""),
             "{{DATE}}": data.get("date", "")
+            "{{Physics}}": data.get("physics", ""),
+            "{{Chemistry}}": data.get("chemistry", ""),
+            "{{Biology}}": data.get("biology", "")
         }
 
         logging.info("🧬 Replacing placeholders inside shapes (XML)")
