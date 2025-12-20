@@ -104,7 +104,7 @@ def generate_docx():
             "{{SET}}": data.get("set", ""),
             "{{DATE}}": data.get("date", ""),
             "{{Physics}}": data.get("physics", ""),
-            "{{Chemistry}}": data.get("chemistry", ""),
+            "{{ROI/KPM}}": data.get("chemistry", ""),
             "{{Biology}}": data.get("biology", "")
         }
 
